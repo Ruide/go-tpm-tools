@@ -246,4 +246,5 @@ steps:
     exit
 options:
   pool:
-    name: 'projects/confidential-space-images-dev/locations/us-west1/workerPools/cs-image-build-vpc'
+    name: 'projects/ruidezhang-2/locations/us-west1/workerPools/cs-image-build-vpc'
+  logging: CLOUD_LOGGING_ONLY
