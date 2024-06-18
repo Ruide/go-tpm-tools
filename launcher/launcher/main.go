@@ -21,6 +21,7 @@ import (
 	"github.com/google/go-tpm-tools/launcher"
 	"github.com/google/go-tpm-tools/launcher/internal/experiments"
 	"github.com/google/go-tpm-tools/launcher/launcherfile"
+	"github.com/google/go-tpm-tools/launcher/registryauth"
 	"github.com/google/go-tpm-tools/launcher/spec"
 	"github.com/google/go-tpm/legacy/tpm2"
 )
@@ -44,6 +45,9 @@ var rcMessage = map[int]string{
 	holdRC:    "VM remains running",
 }
 
+// BuildCommit shows the commit when building the binary, set by -ldflags when building
+var BuildCommit = "dev"
+
 var logger *log.Logger
 var mdsClient *metadata.Client
 
@@ -53,6 +57,7 @@ var exitMessage = "TEE container launcher exiting"
 func main() {
 	var exitCode int // by default exit code is 0
 	var err error
+	ctx := context.Background()
 
 	logger = log.Default()
 	// log.Default() outputs to stderr; change to stdout.
@@ -72,6 +77,7 @@ func main() {
 	logger.SetOutput(io.MultiWriter(os.Stdout, serialConsole))
 
 	logger.Println(welcomeMessage)
+	logger.Printf("Build commit: %s\n", BuildCommit)
 
 	if err := verifyFsAndMount(); err != nil {
 		logger.Printf("failed to verify filesystem and mounts: %v\n", err)
@@ -82,7 +88,7 @@ func main() {
 
 	// Get RestartPolicy and IsHardened from spec
 	mdsClient = metadata.NewClient(nil)
-	launchSpec, err := spec.GetLaunchSpec(mdsClient)
+	launchSpec, err := spec.GetLaunchSpec(ctx, mdsClient)
 	if err != nil {
 		logger.Printf("failed to get launchspec, make sure you're running inside a GCE VM: %v\n", err)
 		// if cannot get launchSpec, exit directly
@@ -122,7 +128,7 @@ func main() {
 			logger.Printf("%s, exit code: %d\n", exitMessage, exitCode)
 		}
 	}()
-	if err = startLauncher(launchSpec, serialConsole); err != nil {
+	if err = startLauncher(ctx, launchSpec, serialConsole); err != nil {
 		logger.Println(err)
 	}
 
@@ -161,7 +167,7 @@ func getExitCode(isHardened bool, restartPolicy spec.RestartPolicy, err error) i
 	return exitCode
 }
 
-func startLauncher(launchSpec spec.LaunchSpec, serialConsole *os.File) error {
+func startLauncher(ctx context.Context, launchSpec spec.LaunchSpec, serialConsole *os.File) error {
 	logger.Printf("Launch Spec: %+v\n", launchSpec)
 	containerdClient, err := containerd.New(defaults.DefaultAddress)
 	if err != nil {
@@ -185,12 +191,12 @@ func startLauncher(launchSpec spec.LaunchSpec, serialConsole *os.File) error {
 	}
 	gceAk.Close()
 
-	token, err := launcher.RetrieveAuthToken(mdsClient)
+	token, err := registryauth.RetrieveAuthToken(ctx, mdsClient)
 	if err != nil {
 		logger.Printf("failed to retrieve auth token: %v, using empty auth for image pulling\n", err)
 	}
 
-	ctx := namespaces.WithNamespace(context.Background(), namespaces.Default)
+	ctx = namespaces.WithNamespace(ctx, namespaces.Default)
 	r, err := launcher.NewRunner(ctx, containerdClient, token, launchSpec, mdsClient, tpm, logger, serialConsole)
 	if err != nil {
 		return err
