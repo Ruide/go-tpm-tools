@@ -27,6 +27,7 @@ var (
 	eventLog    string
 	cloudLog    bool
 	customNonce []string
+	teeVsock    bool
 )
 
 type pcrsFlag struct {
@@ -189,6 +190,11 @@ func addFormatFlag(cmd *cobra.Command) {
 
 func addTeeNonceflag(cmd *cobra.Command) {
 	cmd.PersistentFlags().BytesHexVar(&teeNonce, "tee-nonce", []byte{}, "hex encoded teenonce for hardware attestation, can be empty")
+}
+
+// Lets this command switch to attestation report from vsock backend.
+func addTeeVsockflag(cmd *cobra.Command) {
+	cmd.PersistentFlags().BoolVar(&teeVsock, "tee-vsock", false, "switch to vsock attestation, contains Google signed claims ")
 }
 
 // alwaysError implements io.ReadWriter by always returning an error

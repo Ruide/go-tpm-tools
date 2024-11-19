@@ -88,9 +88,16 @@ hardware and guarantees a fresh quote.
 			}
 			attestOpts.TEENonce = teeNonce
 		case Tdx:
-			attestOpts.TEEDevice, err = client.CreateTdxQuoteProvider()
-			if err != nil {
-				return fmt.Errorf("failed to create %s quote provider: %v", Tdx, err)
+			if teeVsock {
+				attestOpts.TEEDevice, err = client.CreateTdxQuoteVsockProvider()
+				if err != nil {
+					return fmt.Errorf("failed to create %s quote vsock provider: %v", Tdx, err)
+				}
+			} else {
+				attestOpts.TEEDevice, err = client.CreateTdxQuoteProvider()
+				if err != nil {
+					return fmt.Errorf("failed to create %s quote provider: %v", Tdx, err)
+				}
 			}
 			attestOpts.TEENonce = teeNonce
 		case "":
@@ -194,4 +201,5 @@ func init() {
 	addOutputFlag(attestCmd)
 	addFormatFlag(attestCmd)
 	addTeeTechnology(attestCmd)
+	addTeeVsockflag(attestCmd)
 }

@@ -262,6 +262,98 @@ func CreateTdxQuoteProvider() (*TdxQuoteProvider, error) {
 	return &TdxQuoteProvider{QuoteProvider: qp}, nil
 }
 
+// VsockQuoteProvider implements the QuoteProvider interface to fetch
+// attestation quote via Vsock.
+type VsockQuoteProvider struct{}
+
+// IsSupported checks if TSM client can be created to use ConfigFS system. We do not apply TSM client. Thus we return empty.
+func (p *VsockQuoteProvider) IsSupported() error {
+	return nil
+}
+
+// GetRawQuote returns byte format attestation quote via Vsock.
+func (p *VsockQuoteProvider) GetRawQuote(reportData [64]byte) ([]uint8, error) {
+	// Fall back to TDX device driver.
+	device, err := tg.OpenDevice()
+	if err != nil {
+		return nil, fmt.Errorf("neither TDX device, nor ConfigFs is available to fetch attestation quote")
+	}
+	bytes, err := getRawQuoteViaDevice(device, reportData)
+	device.Close()
+	return bytes, err
+}
+
+// CreateTdxQuoteVsockProvider creates the TDX quote vsock provider and wraps it with behavior
+// that allows it to add an attestation quote to pb.Attestation.
+func CreateTdxQuoteVsockProvider() (*TdxQuoteProvider, error) {
+	qp := VsockQuoteProvider{}
+
+	return &TdxQuoteProvider{QuoteProvider: &qp}, nil
+}
+
+// Device encapsulates the possible commands to the TDX guest device.
+type Device interface {
+	Open(path string) error
+	Close() error
+	Ioctl(command uintptr, argument any) (uintptr, error)
+}
+
+// getReport requests for tdx report by making an ioctl call.
+func getReport(d Device, reportData [64]byte) ([]uint8, error) {
+	tdxReportReq := tabi.TdxReportReq{}
+	copy(tdxReportReq.ReportData[:], reportData[:])
+	result, err := d.Ioctl(tabi.IocTdxGetReport, &tdxReportReq)
+	if err != nil {
+		return nil, err
+	}
+	if result != uintptr(tabi.TdxAttestSuccess) {
+		return nil, fmt.Errorf("unable to get the report: %d", result)
+	}
+	return tdxReportReq.TdReport[:], nil
+}
+
+// getRawQuoteViaDevice uses TDX device driver to call getReport for report and convert it to
+// quote using an ioctl call.
+func getRawQuoteViaDevice(d Device, reportData [64]byte) ([]uint8, error) {
+	// logger.V(1).Info("Get raw TDX quote via Device")
+	tdReport, err := getReport(d, reportData)
+	if err != nil {
+		return nil, err
+	}
+	tdxHdr := &tabi.TdxQuoteHdr{
+		Status:  0,
+		Version: 1,
+		InLen:   tabi.TdReportSize,
+		OutLen:  0,
+	}
+	copy(tdxHdr.Data[:], tdReport[:tabi.TdReportSize])
+	tdxReq := tabi.TdxQuoteReq{
+		Buffer: tdxHdr,
+		Length: tabi.ReqBufSize,
+	}
+	//TODO: pass through vsock instead of Ioctl
+	result, err := d.Ioctl(tabi.IocTdxGetQuote, &tdxReq)
+	if err != nil {
+		return nil, err
+	}
+	if result != uintptr(tabi.TdxAttestSuccess) {
+		return nil, fmt.Errorf("unable to get the quote")
+	}
+	if tdxHdr.Status != 0 {
+		if tabi.GetQuoteInFlight == tdxHdr.Status {
+			return nil, fmt.Errorf("the device driver return busy")
+		} else if tabi.GetQuoteServiceUnavailable == tdxHdr.Status {
+			return nil, fmt.Errorf("request feature is not supported")
+		} else if tdxHdr.OutLen == 0 || tdxHdr.OutLen > tabi.ReqBufSize {
+			return nil, fmt.Errorf("invalid Quote size: %v. It must be > 0 and <= : %v", tdxHdr.OutLen, tabi.ReqBufSize)
+		}
+
+		return nil, fmt.Errorf("unexpected error: %v", tdxHdr.Status)
+	}
+
+	return tdxHdr.Data[:tdxHdr.OutLen], nil
+}
+
 // AddAttestation will get the TDX attestation quote given opts.TEENonce
 // and add them to `attestation`. If opts.TEENonce is empty, then uses
 // contents of opts.Nonce.
