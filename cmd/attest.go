@@ -78,6 +78,9 @@ hardware and guarantees a fresh quote.
 
 		attestOpts := client.AttestOpts{}
 		attestOpts.Nonce = nonce
+		if teeVsock {
+			attestOpts.TEEVsock = true
+		}
 
 		// Add logic to open other hardware devices when required.
 		switch teeTechnology {

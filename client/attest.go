@@ -2,6 +2,7 @@ package client
 
 import (
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	tabi "github.com/google/go-tdx-guest/client/linuxabi"
 	tpb "github.com/google/go-tdx-guest/proto/tdx"
 	pb "github.com/google/go-tpm-tools/proto/attest"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -64,6 +66,8 @@ type AttestOpts struct {
 	// depending on the technology's size. Leaving this nil is not recommended. If
 	// nil, then TEEDevice must be nil.
 	TEENonce []byte
+	// TEEVsock implies the Attestation Report is from Vsock.
+	TEEVsock bool
 }
 
 // Given a certificate, iterates through its IssuingCertificateURLs and returns
@@ -276,7 +280,7 @@ func (p *VsockQuoteProvider) GetRawQuote(reportData [64]byte) ([]uint8, error) {
 	// Fall back to TDX device driver.
 	device, err := tg.OpenDevice()
 	if err != nil {
-		return nil, fmt.Errorf("neither TDX device, nor ConfigFs is available to fetch attestation quote")
+		return nil, fmt.Errorf("TDX device is not available to fetch attestation quote")
 	}
 	bytes, err := getRawQuoteViaDevice(device, reportData)
 	device.Close()
@@ -315,43 +319,80 @@ func getReport(d Device, reportData [64]byte) ([]uint8, error) {
 // getRawQuoteViaDevice uses TDX device driver to call getReport for report and convert it to
 // quote using an ioctl call.
 func getRawQuoteViaDevice(d Device, reportData [64]byte) ([]uint8, error) {
-	// logger.V(1).Info("Get raw TDX quote via Device")
+	fmt.Println("[DEBUG] Get raw TDX quote via Device")
 	tdReport, err := getReport(d, reportData)
 	if err != nil {
 		return nil, err
 	}
-	tdxHdr := &tabi.TdxQuoteHdr{
-		Status:  0,
-		Version: 1,
-		InLen:   tabi.TdReportSize,
-		OutLen:  0,
-	}
-	copy(tdxHdr.Data[:], tdReport[:tabi.TdReportSize])
-	tdxReq := tabi.TdxQuoteReq{
-		Buffer: tdxHdr,
-		Length: tabi.ReqBufSize,
-	}
-	//TODO: pass through vsock instead of Ioctl
-	result, err := d.Ioctl(tabi.IocTdxGetQuote, &tdxReq)
+	fmt.Println("[DEBUG] TD report size is:", len(tdReport))
+	fmt.Println("Encoded TD report Hex String: ", hex.EncodeToString(tdReport))
+
+	// tdxHdr := &tabi.TdxQuoteHdr{
+	// 	Status:  0,
+	// 	Version: 1,
+	// 	InLen:   tabi.TdReportSize,
+	// 	OutLen:  0,
+	// }
+	// copy(tdxHdr.Data[:], tdReport[:tabi.TdReportSize])
+	// tdxReq := tabi.TdxQuoteReq{
+	// 	Buffer: tdxHdr,
+	// 	Length: tabi.ReqBufSize,
+	// }
+
+	//pass through vsock instead of Ioctl
+	//go/tdx-guest device driver does not provide the Quote ioctl. only report ioctl.
+	// Establish a connection-oriented VM socket.
+	socket, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
 		return nil, err
 	}
-	if result != uintptr(tabi.TdxAttestSuccess) {
-		return nil, fmt.Errorf("unable to get the quote")
-	}
-	if tdxHdr.Status != 0 {
-		if tabi.GetQuoteInFlight == tdxHdr.Status {
-			return nil, fmt.Errorf("the device driver return busy")
-		} else if tabi.GetQuoteServiceUnavailable == tdxHdr.Status {
-			return nil, fmt.Errorf("request feature is not supported")
-		} else if tdxHdr.OutLen == 0 || tdxHdr.OutLen > tabi.ReqBufSize {
-			return nil, fmt.Errorf("invalid Quote size: %v. It must be > 0 and <= : %v", tdxHdr.OutLen, tabi.ReqBufSize)
-		}
 
-		return nil, fmt.Errorf("unexpected error: %v", tdxHdr.Status)
+	// Connect socket to hypervisor context ID, port 4242.
+	// TODO: decide on a port
+	sockaddr := &unix.SockaddrVM{
+		CID:  unix.VMADDR_CID_HYPERVISOR,
+		Port: 4242,
 	}
+	if err := unix.Connect(socket, sockaddr); err != nil {
+		return nil, err
+	}
+	fmt.Println("[DEBUG] Connected to server")
 
-	return tdxHdr.Data[:tdxHdr.OutLen], nil
+	if err := unix.Send(socket, tdReport, 0); err != nil {
+		return nil, err
+	}
+	fmt.Println("[DEBUG] Sent data to server")
+	fmt.Println("Encoded Hex String: ", hex.EncodeToString(tdReport))
+
+	// Receive a reply from the server
+	// TODO: real quote size
+	quote := make([]byte, 1024)
+	if _, _, err := unix.Recvfrom(socket, quote, 0); err != nil {
+		return nil, err
+	}
+	fmt.Println("[DEBUG] Received reply from server", quote)
+	fmt.Println("Encoded Quote Hex String: ", hex.EncodeToString(quote))
+
+	// result, err := d.Ioctl(tabi.IocTdxGetQuote, &tdxReq)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// if result != uintptr(tabi.TdxAttestSuccess) {
+	// 	return nil, fmt.Errorf("unable to get the quote")
+	// }
+	// if tdxHdr.Status != 0 {
+	// 	if tabi.GetQuoteInFlight == tdxHdr.Status {
+	// 		return nil, fmt.Errorf("the device driver return busy")
+	// 	} else if tabi.GetQuoteServiceUnavailable == tdxHdr.Status {
+	// 		return nil, fmt.Errorf("request feature is not supported")
+	// 	} else if tdxHdr.OutLen == 0 || tdxHdr.OutLen > tabi.ReqBufSize {
+	// 		return nil, fmt.Errorf("invalid Quote size: %v. It must be > 0 and <= : %v", tdxHdr.OutLen, tabi.ReqBufSize)
+	// 	}
+
+	// 	return nil, fmt.Errorf("unexpected error: %v", tdxHdr.Status)
+	// }
+
+	return quote, nil
 }
 
 // AddAttestation will get the TDX attestation quote given opts.TEENonce
@@ -363,11 +404,21 @@ func (qp *TdxQuoteProvider) AddAttestation(attestation *pb.Attestation, opts Att
 	if err != nil {
 		return err
 	}
-	quote, err := tg.GetQuote(qp.QuoteProvider, tdxNonce)
-	if err != nil {
-		return err
+	if opts.TEEVsock {
+		// QuoteProvider set to vsock quote provider by cmd.
+		_, err := tg.GetRawQuote(qp.QuoteProvider, tdxNonce)
+		if err != nil {
+			return err
+		}
+		// TODO: set Quote to QuoteV4 format. And add certchain interface to attest.proto
+		return nil
+	} else {
+		quote, err := tg.GetQuote(qp.QuoteProvider, tdxNonce)
+		if err != nil {
+			return err
+		}
+		return setTeeAttestationTdxQuote(quote, attestation)
 	}
-	return setTeeAttestationTdxQuote(quote, attestation)
 }
 
 // Close will free resources held by QuoteProvider.
