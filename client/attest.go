@@ -411,7 +411,9 @@ func (qp *TdxQuoteProvider) AddAttestation(attestation *pb.Attestation, opts Att
 		if err != nil {
 			return err
 		}
-		// TODO: set Quote to QuoteV4 format. And add certchain interface to attest.proto
+		// TODO: set Quote to QuoteV4 format. And add certchain interface to attest.proto.
+		// QuoteV4 format in setTeeAttestationTdxQuote get passed to protobuf and got printed
+		// in the end of the command.
 		return nil
 	} else {
 		quote, err := tg.GetQuote(qp.QuoteProvider, tdxNonce)
