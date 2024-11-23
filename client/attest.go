@@ -358,7 +358,7 @@ func getRawQuoteViaDevice(d Device, reportData [64]byte) ([]uint8, error) {
 	}
 	fmt.Println("[DEBUG] Connected to server")
 
-	if err := unix.Send(socket, tdReport, 0); err != nil {
+	if err := unix.Send(socket, []byte(tdReport), 0); err != nil {
 		return nil, err
 	}
 	fmt.Println("[DEBUG] Sent data to server")
@@ -366,6 +366,7 @@ func getRawQuoteViaDevice(d Device, reportData [64]byte) ([]uint8, error) {
 
 	// Receive a reply from the server
 	// TODO: real quote size
+	// follow https://download.01.org/intel-sgx/latest/dcap-latest/linux/docs/Intel_TDX_DCAP_Quoting_Library_API.pdf
 	quote := make([]byte, 1024)
 	if _, _, err := unix.Recvfrom(socket, quote, 0); err != nil {
 		return nil, err
